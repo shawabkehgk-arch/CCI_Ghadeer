@@ -1,0 +1,997 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/shawabkehgk-arch/CCI_Ghadeer/blob/main/KHCC_Patient_Intake_Assignment.ipynb%20\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "BXSLYOJrZuPo"
+      },
+      "source": [
+        "# KHCC Outpatient Oncology Clinic - Automated Patient Intake Processing\n",
+        "This notebook completes the CCI Prompt Engineering & Clinical AI Development assignment.\n",
+        "\n",
+        "**Scenario:** Automate intake review for 30-50 new oncology patients per day by:\n",
+        "- modeling patient intake data\n",
+        "- flagging abnormal labs\n",
+        "- identifying high-risk patients\n",
+        "- detecting drug interactions\n",
+        "- exporting CSV reports\n",
+        "- generating a simulated email summary\n",
+        "\n",
+        "**Stretch challenge chosen:** **Option A - Email Report Generator**"
+      ],
+      "id": "BXSLYOJrZuPo"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "KzxAM_q6ZuPt"
+      },
+      "source": [
+        "## Section 1: Package Installations"
+      ],
+      "id": "KzxAM_q6ZuPt"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 1,
+      "metadata": {
+        "id": "U8KTd91UZuPu"
+      },
+      "outputs": [],
+      "source": [
+        "# === SECTION 1: PACKAGE INSTALLATIONS ===\n",
+        "# pandas is pre-installed in Colab, but this keeps the notebook explicit.\n",
+        "!pip -q install pandas"
+      ],
+      "id": "U8KTd91UZuPu"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "hdpSYCZ2ZuPv"
+      },
+      "source": [
+        "## Section 2: Imports"
+      ],
+      "id": "hdpSYCZ2ZuPv"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 2,
+      "metadata": {
+        "id": "Wcu4peyFZuPw"
+      },
+      "outputs": [],
+      "source": [
+        "# === SECTION 2: IMPORTS ===\n",
+        "import pandas as pd\n",
+        "import csv\n",
+        "from datetime import datetime\n",
+        "from itertools import combinations"
+      ],
+      "id": "Wcu4peyFZuPw"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "0UEgQOtjZuPx"
+      },
+      "source": [
+        "## Section 3: Configuration"
+      ],
+      "id": "0UEgQOtjZuPx"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 3,
+      "metadata": {
+        "id": "4GSBbRLCZuPx"
+      },
+      "outputs": [],
+      "source": [
+        "# === SECTION 3: CONFIGURATION ===\n",
+        "\n",
+        "# Clinical thresholds\n",
+        "HGB_LOW = 10.0\n",
+        "HGB_CRITICAL = 8.0\n",
+        "WBC_LOW = 3.5\n",
+        "WBC_HIGH = 11.0\n",
+        "PLATELETS_LOW = 100\n",
+        "CREATININE_HIGH = 1.3\n",
+        "\n",
+        "# Medication keywords used in risk logic\n",
+        "CHEMO_KEYWORDS = {\n",
+        "    \"cisplatin\", \"carboplatin\", \"oxaliplatin\", \"paclitaxel\", \"docetaxel\",\n",
+        "    \"doxorubicin\", \"cyclophosphamide\", \"gemcitabine\", \"pemetrexed\",\n",
+        "    \"capecitabine\", \"5-fluorouracil\", \"etoposide\", \"irinotecan\",\n",
+        "    \"vincristine\", \"methotrexate\"\n",
+        "}\n",
+        "\n",
+        "# Output files\n",
+        "ALL_PATIENTS_FILE = \"all_patients.csv\"\n",
+        "HIGH_RISK_FILE = \"high_risk_patients.csv\"\n",
+        "DRUG_ALERTS_FILE = \"drug_interaction_alerts.csv\""
+      ],
+      "id": "4GSBbRLCZuPx"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "thLZIm1sZuPy"
+      },
+      "source": [
+        "## Section 4: Prompts"
+      ],
+      "id": "thLZIm1sZuPy"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 4,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "M2wsXNjbZuPz",
+        "outputId": "a02d5f7f-00d9-42ed-e575-84a0af504693"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "You are an oncology intake assistant.\n",
+            "Summarize today's outpatient intake workflow with:\n",
+            "1. Total patients processed\n",
+            "2. Number of high-risk patients\n",
+            "3. Key abnormal lab themes\n",
+            "4. Drug interaction alerts requiring clinician review\n",
+            "5. Recommended prioritization for oncologist review\n",
+            "\n",
+            "Use concise clinical language. Do not invent data.\n",
+            "\n"
+          ]
+        }
+      ],
+      "source": [
+        "# === SECTION 4: PROMPTS ===\n",
+        "\n",
+        "DAILY_SUMMARY_PROMPT = '''\n",
+        "You are an oncology intake assistant.\n",
+        "Summarize today's outpatient intake workflow with:\n",
+        "1. Total patients processed\n",
+        "2. Number of high-risk patients\n",
+        "3. Key abnormal lab themes\n",
+        "4. Drug interaction alerts requiring clinician review\n",
+        "5. Recommended prioritization for oncologist review\n",
+        "\n",
+        "Use concise clinical language. Do not invent data.\n",
+        "'''\n",
+        "print(DAILY_SUMMARY_PROMPT)"
+      ],
+      "id": "M2wsXNjbZuPz"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "f0tvcCMEZuPz"
+      },
+      "source": [
+        "## Section 5: Functions\n",
+        "### Part 1 - PatientIntake Class"
+      ],
+      "id": "f0tvcCMEZuPz"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 5,
+      "metadata": {
+        "id": "viKXTs1yZuP0"
+      },
+      "outputs": [],
+      "source": [
+        "# === SECTION 5: FUNCTIONS ===\n",
+        "\n",
+        "class PatientIntake:\n",
+        "    \"\"\"Represents a patient intake form with demographics, labs, medications, and clinical note.\"\"\"\n",
+        "\n",
+        "    def __init__(self, name, mrn, age, gender, diagnosis, hemoglobin, wbc,\n",
+        "                 platelets, creatinine, medications=None, clinical_note=\"\"):\n",
+        "        self.name = name\n",
+        "        self.mrn = mrn\n",
+        "        self.age = age\n",
+        "        self.gender = gender\n",
+        "        self.diagnosis = diagnosis\n",
+        "        self.hemoglobin = hemoglobin\n",
+        "        self.wbc = wbc\n",
+        "        self.platelets = platelets\n",
+        "        self.creatinine = creatinine\n",
+        "        self.medications = medications if medications is not None else []\n",
+        "        self.clinical_note = clinical_note\n",
+        "\n",
+        "    def get_lab_alerts(self):\n",
+        "        \"\"\"Check all lab values against thresholds and return a list of alert strings.\"\"\"\n",
+        "        alerts = []\n",
+        "\n",
+        "        # Hemoglobin\n",
+        "        if self.hemoglobin < HGB_CRITICAL:\n",
+        "            alerts.append(\"Critical low hemoglobin\")\n",
+        "        elif self.hemoglobin < HGB_LOW:\n",
+        "            alerts.append(\"Low hemoglobin\")\n",
+        "\n",
+        "        # WBC\n",
+        "        if self.wbc < WBC_LOW:\n",
+        "            alerts.append(\"Low WBC\")\n",
+        "        elif self.wbc > WBC_HIGH:\n",
+        "            alerts.append(\"High WBC\")\n",
+        "\n",
+        "        # Platelets\n",
+        "        if self.platelets < PLATELETS_LOW:\n",
+        "            alerts.append(\"Low platelets\")\n",
+        "\n",
+        "        # Creatinine\n",
+        "        if self.creatinine > CREATININE_HIGH:\n",
+        "            alerts.append(\"High creatinine\")\n",
+        "\n",
+        "        return alerts\n",
+        "\n",
+        "    def _on_chemo(self):\n",
+        "        meds_lower = {m.strip().lower() for m in self.medications}\n",
+        "        return any(med in CHEMO_KEYWORDS for med in meds_lower)\n",
+        "\n",
+        "    def is_high_risk(self):\n",
+        "        \"\"\"Returns True if patient meets multiple risk criteria.\"\"\"\n",
+        "        alerts = self.get_lab_alerts()\n",
+        "        on_chemo = self._on_chemo()\n",
+        "\n",
+        "        # Specific high-risk patterns\n",
+        "        if self.hemoglobin < HGB_CRITICAL:\n",
+        "            return True\n",
+        "        if self.wbc < WBC_LOW and on_chemo:\n",
+        "            return True\n",
+        "        if self.platelets < PLATELETS_LOW and on_chemo:\n",
+        "            return True\n",
+        "        if self.creatinine > CREATININE_HIGH and on_chemo:\n",
+        "            return True\n",
+        "        if len(alerts) >= 2:\n",
+        "            return True\n",
+        "\n",
+        "        return False\n",
+        "\n",
+        "    def summary(self):\n",
+        "        \"\"\"Returns a formatted summary string.\"\"\"\n",
+        "        med_text = \", \".join(self.medications) if self.medications else \"None\"\n",
+        "        return (\n",
+        "            f\"Patient: {self.name} ({self.mrn})\\n\"\n",
+        "            f\"Age/Gender: {self.age} / {self.gender}\\n\"\n",
+        "            f\"Diagnosis: {self.diagnosis}\\n\"\n",
+        "            f\"Labs -> Hgb: {self.hemoglobin}, WBC: {self.wbc}, \"\n",
+        "            f\"Platelets: {self.platelets}, Creatinine: {self.creatinine}\\n\"\n",
+        "            f\"Medications: {med_text}\\n\"\n",
+        "            f\"Clinical note: {self.clinical_note}\"\n",
+        "        )\n",
+        "\n",
+        "    def to_dict(self):\n",
+        "        \"\"\"Returns a dictionary representation for DataFrame/CSV conversion.\"\"\"\n",
+        "        alerts = self.get_lab_alerts()\n",
+        "        return {\n",
+        "            \"name\": self.name,\n",
+        "            \"mrn\": self.mrn,\n",
+        "            \"age\": self.age,\n",
+        "            \"gender\": self.gender,\n",
+        "            \"diagnosis\": self.diagnosis,\n",
+        "            \"hemoglobin\": self.hemoglobin,\n",
+        "            \"wbc\": self.wbc,\n",
+        "            \"platelets\": self.platelets,\n",
+        "            \"creatinine\": self.creatinine,\n",
+        "            \"medications\": \", \".join(self.medications),\n",
+        "            \"clinical_note\": self.clinical_note,\n",
+        "            \"lab_alerts\": \"; \".join(alerts) if alerts else \"\",\n",
+        "            \"is_high_risk\": self.is_high_risk(),\n",
+        "            \"alert_count\": len(alerts)\n",
+        "        }"
+      ],
+      "id": "viKXTs1yZuP0"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "5sAmHY1dZuP1"
+      },
+      "source": [
+        "## Section 6: Main Code\n",
+        "### Create 15+ Patient Intake Records"
+      ],
+      "id": "5sAmHY1dZuP1"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 6,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "s0zgqAfaZuP1",
+        "outputId": "0708700e-f24e-49cc-d905-b56a9811dbbd"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Total patients: 16\n",
+            "Patient: Ahmad Saleh (P-1001)\n",
+            "Age/Gender: 58 / M\n",
+            "Diagnosis: Lung Cancer\n",
+            "Labs -> Hgb: 9.1, WBC: 6.2, Platelets: 180, Creatinine: 1.1\n",
+            "Medications: Cisplatin, Pemetrexed\n",
+            "Clinical note: New diagnosis, stage IIIA NSCLC\n",
+            "  Alerts: Low hemoglobin\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Rana Khalil (P-1002)\n",
+            "Age/Gender: 46 / F\n",
+            "Diagnosis: Breast Cancer\n",
+            "Labs -> Hgb: 11.8, WBC: 5.9, Platelets: 250, Creatinine: 0.8\n",
+            "Medications: Doxorubicin, Cyclophosphamide\n",
+            "Clinical note: Planned neoadjuvant chemotherapy\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Sami Haddad (P-1003)\n",
+            "Age/Gender: 67 / M\n",
+            "Diagnosis: Colorectal Cancer\n",
+            "Labs -> Hgb: 7.4, WBC: 3.1, Platelets: 95, Creatinine: 1.5\n",
+            "Medications: Oxaliplatin, Capecitabine, Metformin\n",
+            "Clinical note: Fatigue and poor oral intake\n",
+            "  Alerts: Critical low hemoglobin, Low WBC, Low platelets, High creatinine\n",
+            "  *** HIGH RISK ***\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Lina Odeh (P-1004)\n",
+            "Age/Gender: 39 / F\n",
+            "Diagnosis: Lymphoma\n",
+            "Labs -> Hgb: 10.9, WBC: 12.8, Platelets: 220, Creatinine: 0.9\n",
+            "Medications: Prednisone, Vincristine\n",
+            "Clinical note: B symptoms, bulky cervical nodes\n",
+            "  Alerts: High WBC\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Yousef Naser (P-1005)\n",
+            "Age/Gender: 71 / M\n",
+            "Diagnosis: Prostate Cancer\n",
+            "Labs -> Hgb: 12.6, WBC: 6.0, Platelets: 175, Creatinine: 1.7\n",
+            "Medications: Docetaxel, Ibuprofen\n",
+            "Clinical note: Bone pain, castration-resistant disease\n",
+            "  Alerts: High creatinine\n",
+            "  *** HIGH RISK ***\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Huda Mansour (P-1006)\n",
+            "Age/Gender: 54 / F\n",
+            "Diagnosis: Ovarian Cancer\n",
+            "Labs -> Hgb: 8.7, WBC: 2.9, Platelets: 88, Creatinine: 1.0\n",
+            "Medications: Carboplatin, Paclitaxel\n",
+            "Clinical note: Cycle 3 follow-up, mucositis reported\n",
+            "  Alerts: Low hemoglobin, Low WBC, Low platelets\n",
+            "  *** HIGH RISK ***\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Mohammad Darwish (P-1007)\n",
+            "Age/Gender: 63 / M\n",
+            "Diagnosis: Leukemia\n",
+            "Labs -> Hgb: 8.2, WBC: 18.4, Platelets: 70, Creatinine: 1.2\n",
+            "Medications: Methotrexate, Warfarin\n",
+            "Clinical note: Recently admitted with fever\n",
+            "  Alerts: Low hemoglobin, High WBC, Low platelets\n",
+            "  *** HIGH RISK ***\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Alaa Qasem (P-1008)\n",
+            "Age/Gender: 29 / F\n",
+            "Diagnosis: Breast Cancer\n",
+            "Labs -> Hgb: 12.9, WBC: 4.8, Platelets: 280, Creatinine: 0.7\n",
+            "Medications: Tamoxifen\n",
+            "Clinical note: Early-stage disease, routine review\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Fadi Abu Ali (P-1009)\n",
+            "Age/Gender: 60 / M\n",
+            "Diagnosis: Lung Cancer\n",
+            "Labs -> Hgb: 10.1, WBC: 3.2, Platelets: 140, Creatinine: 1.4\n",
+            "Medications: Cisplatin, Metformin\n",
+            "Clinical note: Diabetic patient starting cycle 1\n",
+            "  Alerts: Low WBC, High creatinine\n",
+            "  *** HIGH RISK ***\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Maha Shanti (P-1010)\n",
+            "Age/Gender: 52 / F\n",
+            "Diagnosis: Colorectal Cancer\n",
+            "Labs -> Hgb: 9.5, WBC: 7.4, Platelets: 130, Creatinine: 0.9\n",
+            "Medications: Capecitabine, Warfarin\n",
+            "Clinical note: Adjuvant therapy, recent DVT history\n",
+            "  Alerts: Low hemoglobin\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Omar Zayed (P-1011)\n",
+            "Age/Gender: 75 / M\n",
+            "Diagnosis: Lymphoma\n",
+            "Labs -> Hgb: 13.1, WBC: 5.1, Platelets: 165, Creatinine: 1.0\n",
+            "Medications: Rituximab, Prednisone\n",
+            "Clinical note: Stable, no acute complaints\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Nour Hamdan (P-1012)\n",
+            "Age/Gender: 44 / F\n",
+            "Diagnosis: Ovarian Cancer\n",
+            "Labs -> Hgb: 7.8, WBC: 2.7, Platelets: 92, Creatinine: 1.6\n",
+            "Medications: Carboplatin, Paclitaxel, Ibuprofen\n",
+            "Clinical note: Post-cycle fatigue and nausea\n",
+            "  Alerts: Critical low hemoglobin, Low WBC, Low platelets, High creatinine\n",
+            "  *** HIGH RISK ***\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Bassam Kreishan (P-1013)\n",
+            "Age/Gender: 65 / M\n",
+            "Diagnosis: Leukemia\n",
+            "Labs -> Hgb: 11.0, WBC: 2.8, Platelets: 105, Creatinine: 1.1\n",
+            "Medications: Methotrexate, Trimethoprim-Sulfamethoxazole\n",
+            "Clinical note: Marrow suppression concern\n",
+            "  Alerts: Low WBC\n",
+            "  *** HIGH RISK ***\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Sara Abu Rumman (P-1014)\n",
+            "Age/Gender: 50 / F\n",
+            "Diagnosis: Breast Cancer\n",
+            "Labs -> Hgb: 10.7, WBC: 6.5, Platelets: 115, Creatinine: 0.9\n",
+            "Medications: Tamoxifen, Warfarin\n",
+            "Clinical note: Hormonal therapy, anticoagulated for AF\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Khaled Tawalbeh (P-1015)\n",
+            "Age/Gender: 62 / M\n",
+            "Diagnosis: Lung Cancer\n",
+            "Labs -> Hgb: 12.2, WBC: 11.7, Platelets: 210, Creatinine: 1.2\n",
+            "Medications: Etoposide, Cisplatin\n",
+            "Clinical note: Mild cough, day 1 chemotherapy\n",
+            "  Alerts: High WBC\n",
+            "--------------------------------------------------------------------------------\n",
+            "Patient: Dina Barakat (P-1016)\n",
+            "Age/Gender: 36 / F\n",
+            "Diagnosis: Lymphoma\n",
+            "Labs -> Hgb: 11.6, WBC: 3.4, Platelets: 98, Creatinine: 0.8\n",
+            "Medications: Vincristine, Doxorubicin\n",
+            "Clinical note: Counts borderline before next cycle\n",
+            "  Alerts: Low WBC, Low platelets\n",
+            "  *** HIGH RISK ***\n",
+            "--------------------------------------------------------------------------------\n"
+          ]
+        }
+      ],
+      "source": [
+        "# === SECTION 6: MAIN CODE ===\n",
+        "\n",
+        "patients = [\n",
+        "    PatientIntake(\"Ahmad Saleh\", \"P-1001\", 58, \"M\", \"Lung Cancer\", 9.1, 6.2, 180, 1.1,\n",
+        "                  [\"Cisplatin\", \"Pemetrexed\"], \"New diagnosis, stage IIIA NSCLC\"),\n",
+        "    PatientIntake(\"Rana Khalil\", \"P-1002\", 46, \"F\", \"Breast Cancer\", 11.8, 5.9, 250, 0.8,\n",
+        "                  [\"Doxorubicin\", \"Cyclophosphamide\"], \"Planned neoadjuvant chemotherapy\"),\n",
+        "    PatientIntake(\"Sami Haddad\", \"P-1003\", 67, \"M\", \"Colorectal Cancer\", 7.4, 3.1, 95, 1.5,\n",
+        "                  [\"Oxaliplatin\", \"Capecitabine\", \"Metformin\"], \"Fatigue and poor oral intake\"),\n",
+        "    PatientIntake(\"Lina Odeh\", \"P-1004\", 39, \"F\", \"Lymphoma\", 10.9, 12.8, 220, 0.9,\n",
+        "                  [\"Prednisone\", \"Vincristine\"], \"B symptoms, bulky cervical nodes\"),\n",
+        "    PatientIntake(\"Yousef Naser\", \"P-1005\", 71, \"M\", \"Prostate Cancer\", 12.6, 6.0, 175, 1.7,\n",
+        "                  [\"Docetaxel\", \"Ibuprofen\"], \"Bone pain, castration-resistant disease\"),\n",
+        "    PatientIntake(\"Huda Mansour\", \"P-1006\", 54, \"F\", \"Ovarian Cancer\", 8.7, 2.9, 88, 1.0,\n",
+        "                  [\"Carboplatin\", \"Paclitaxel\"], \"Cycle 3 follow-up, mucositis reported\"),\n",
+        "    PatientIntake(\"Mohammad Darwish\", \"P-1007\", 63, \"M\", \"Leukemia\", 8.2, 18.4, 70, 1.2,\n",
+        "                  [\"Methotrexate\", \"Warfarin\"], \"Recently admitted with fever\"),\n",
+        "    PatientIntake(\"Alaa Qasem\", \"P-1008\", 29, \"F\", \"Breast Cancer\", 12.9, 4.8, 280, 0.7,\n",
+        "                  [\"Tamoxifen\"], \"Early-stage disease, routine review\"),\n",
+        "    PatientIntake(\"Fadi Abu Ali\", \"P-1009\", 60, \"M\", \"Lung Cancer\", 10.1, 3.2, 140, 1.4,\n",
+        "                  [\"Cisplatin\", \"Metformin\"], \"Diabetic patient starting cycle 1\"),\n",
+        "    PatientIntake(\"Maha Shanti\", \"P-1010\", 52, \"F\", \"Colorectal Cancer\", 9.5, 7.4, 130, 0.9,\n",
+        "                  [\"Capecitabine\", \"Warfarin\"], \"Adjuvant therapy, recent DVT history\"),\n",
+        "    PatientIntake(\"Omar Zayed\", \"P-1011\", 75, \"M\", \"Lymphoma\", 13.1, 5.1, 165, 1.0,\n",
+        "                  [\"Rituximab\", \"Prednisone\"], \"Stable, no acute complaints\"),\n",
+        "    PatientIntake(\"Nour Hamdan\", \"P-1012\", 44, \"F\", \"Ovarian Cancer\", 7.8, 2.7, 92, 1.6,\n",
+        "                  [\"Carboplatin\", \"Paclitaxel\", \"Ibuprofen\"], \"Post-cycle fatigue and nausea\"),\n",
+        "    PatientIntake(\"Bassam Kreishan\", \"P-1013\", 65, \"M\", \"Leukemia\", 11.0, 2.8, 105, 1.1,\n",
+        "                  [\"Methotrexate\", \"Trimethoprim-Sulfamethoxazole\"], \"Marrow suppression concern\"),\n",
+        "    PatientIntake(\"Sara Abu Rumman\", \"P-1014\", 50, \"F\", \"Breast Cancer\", 10.7, 6.5, 115, 0.9,\n",
+        "                  [\"Tamoxifen\", \"Warfarin\"], \"Hormonal therapy, anticoagulated for AF\"),\n",
+        "    PatientIntake(\"Khaled Tawalbeh\", \"P-1015\", 62, \"M\", \"Lung Cancer\", 12.2, 11.7, 210, 1.2,\n",
+        "                  [\"Etoposide\", \"Cisplatin\"], \"Mild cough, day 1 chemotherapy\"),\n",
+        "    PatientIntake(\"Dina Barakat\", \"P-1016\", 36, \"F\", \"Lymphoma\", 11.6, 3.4, 98, 0.8,\n",
+        "                  [\"Vincristine\", \"Doxorubicin\"], \"Counts borderline before next cycle\"),\n",
+        "]\n",
+        "\n",
+        "print(f\"Total patients: {len(patients)}\")\n",
+        "\n",
+        "for p in patients:\n",
+        "    print(p.summary())\n",
+        "    alerts = p.get_lab_alerts()\n",
+        "    if alerts:\n",
+        "        print(f\"  Alerts: {', '.join(alerts)}\")\n",
+        "    if p.is_high_risk():\n",
+        "        print(\"  *** HIGH RISK ***\")\n",
+        "    print(\"-\" * 80)"
+      ],
+      "id": "s0zgqAfaZuP1"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "L4kjB-2_ZuP1"
+      },
+      "source": [
+        "### Part 2 - Merge, Analyze, and Export\n",
+        "#### Step A: Convert patients to DataFrame"
+      ],
+      "id": "L4kjB-2_ZuP1"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 7,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "Cbq0CGlCZuP2",
+        "outputId": "02016f62-8787-4a65-db03-b8230cff7368"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "           name     mrn  age gender          diagnosis  hemoglobin   wbc  \\\n",
+            "0   Ahmad Saleh  P-1001   58      M        Lung Cancer         9.1   6.2   \n",
+            "1   Rana Khalil  P-1002   46      F      Breast Cancer        11.8   5.9   \n",
+            "2   Sami Haddad  P-1003   67      M  Colorectal Cancer         7.4   3.1   \n",
+            "3     Lina Odeh  P-1004   39      F           Lymphoma        10.9  12.8   \n",
+            "4  Yousef Naser  P-1005   71      M    Prostate Cancer        12.6   6.0   \n",
+            "\n",
+            "   platelets  creatinine                           medications  \\\n",
+            "0        180         1.1                 Cisplatin, Pemetrexed   \n",
+            "1        250         0.8         Doxorubicin, Cyclophosphamide   \n",
+            "2         95         1.5  Oxaliplatin, Capecitabine, Metformin   \n",
+            "3        220         0.9               Prednisone, Vincristine   \n",
+            "4        175         1.7                  Docetaxel, Ibuprofen   \n",
+            "\n",
+            "                             clinical_note  \\\n",
+            "0          New diagnosis, stage IIIA NSCLC   \n",
+            "1         Planned neoadjuvant chemotherapy   \n",
+            "2             Fatigue and poor oral intake   \n",
+            "3         B symptoms, bulky cervical nodes   \n",
+            "4  Bone pain, castration-resistant disease   \n",
+            "\n",
+            "                                          lab_alerts  is_high_risk  \\\n",
+            "0                                     Low hemoglobin         False   \n",
+            "1                                                            False   \n",
+            "2  Critical low hemoglobin; Low WBC; Low platelet...          True   \n",
+            "3                                           High WBC         False   \n",
+            "4                                    High creatinine          True   \n",
+            "\n",
+            "   alert_count  \n",
+            "0            1  \n",
+            "1            0  \n",
+            "2            4  \n",
+            "3            1  \n",
+            "4            1  \n",
+            "\n",
+            "Shape: (16, 14)\n"
+          ]
+        }
+      ],
+      "source": [
+        "# Step A: Convert to DataFrame\n",
+        "patient_dicts = [p.to_dict() for p in patients]\n",
+        "df = pd.DataFrame(patient_dicts)\n",
+        "\n",
+        "print(df.head())\n",
+        "print(f\"\\nShape: {df.shape}\")"
+      ],
+      "id": "Cbq0CGlCZuP2"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "fjRF8jUiZuP2"
+      },
+      "source": [
+        "#### Step B: Create Drug Interaction Table"
+      ],
+      "id": "fjRF8jUiZuP2"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 8,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "u0abCpvBZuP2",
+        "outputId": "8b3b9ad4-896e-4969-d075-19d0f689cfdc"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "          drug1                          drug2 interaction_severity  \\\n",
+            "0     Cisplatin                      Metformin                Major   \n",
+            "1      Warfarin                      Ibuprofen                Major   \n",
+            "2  Methotrexate                      Ibuprofen                Major   \n",
+            "3  Methotrexate  Trimethoprim-Sulfamethoxazole                Major   \n",
+            "4  Capecitabine                       Warfarin                Major   \n",
+            "5     Cisplatin                      Ibuprofen             Moderate   \n",
+            "6    Paclitaxel                       Warfarin             Moderate   \n",
+            "7   Doxorubicin               Cyclophosphamide             Moderate   \n",
+            "8   Carboplatin                     Paclitaxel             Moderate   \n",
+            "9     Tamoxifen                       Warfarin                Major   \n",
+            "\n",
+            "                                        description  \n",
+            "0  Increased nephrotoxicity / renal impairment risk  \n",
+            "1                           Increased bleeding risk  \n",
+            "2  Reduced methotrexate clearance and toxicity risk  \n",
+            "3   Myelosuppression and methotrexate toxicity risk  \n",
+            "4     Potentiates anticoagulation and bleeding risk  \n",
+            "5                         May worsen renal function  \n",
+            "6          Possible INR elevation and bleeding risk  \n",
+            "7    Combined regimen may increase myelosuppression  \n",
+            "8       Combination may increase marrow suppression  \n",
+            "9           Marked increase in anticoagulant effect  \n"
+          ]
+        }
+      ],
+      "source": [
+        "# Step B: Drug interaction table\n",
+        "interactions = pd.DataFrame([\n",
+        "    {\"drug1\": \"Cisplatin\", \"drug2\": \"Metformin\", \"interaction_severity\": \"Major\",\n",
+        "     \"description\": \"Increased nephrotoxicity / renal impairment risk\"},\n",
+        "    {\"drug1\": \"Warfarin\", \"drug2\": \"Ibuprofen\", \"interaction_severity\": \"Major\",\n",
+        "     \"description\": \"Increased bleeding risk\"},\n",
+        "    {\"drug1\": \"Methotrexate\", \"drug2\": \"Ibuprofen\", \"interaction_severity\": \"Major\",\n",
+        "     \"description\": \"Reduced methotrexate clearance and toxicity risk\"},\n",
+        "    {\"drug1\": \"Methotrexate\", \"drug2\": \"Trimethoprim-Sulfamethoxazole\", \"interaction_severity\": \"Major\",\n",
+        "     \"description\": \"Myelosuppression and methotrexate toxicity risk\"},\n",
+        "    {\"drug1\": \"Capecitabine\", \"drug2\": \"Warfarin\", \"interaction_severity\": \"Major\",\n",
+        "     \"description\": \"Potentiates anticoagulation and bleeding risk\"},\n",
+        "    {\"drug1\": \"Cisplatin\", \"drug2\": \"Ibuprofen\", \"interaction_severity\": \"Moderate\",\n",
+        "     \"description\": \"May worsen renal function\"},\n",
+        "    {\"drug1\": \"Paclitaxel\", \"drug2\": \"Warfarin\", \"interaction_severity\": \"Moderate\",\n",
+        "     \"description\": \"Possible INR elevation and bleeding risk\"},\n",
+        "    {\"drug1\": \"Doxorubicin\", \"drug2\": \"Cyclophosphamide\", \"interaction_severity\": \"Moderate\",\n",
+        "     \"description\": \"Combined regimen may increase myelosuppression\"},\n",
+        "    {\"drug1\": \"Carboplatin\", \"drug2\": \"Paclitaxel\", \"interaction_severity\": \"Moderate\",\n",
+        "     \"description\": \"Combination may increase marrow suppression\"},\n",
+        "    {\"drug1\": \"Tamoxifen\", \"drug2\": \"Warfarin\", \"interaction_severity\": \"Major\",\n",
+        "     \"description\": \"Marked increase in anticoagulant effect\"},\n",
+        "])\n",
+        "\n",
+        "print(interactions)"
+      ],
+      "id": "u0abCpvBZuP2"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "QuvRlONcZuP3"
+      },
+      "source": [
+        "#### Step C: Check for Drug Interactions"
+      ],
+      "id": "QuvRlONcZuP3"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 9,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "TBdmpKxDZuP3",
+        "outputId": "bdbf157e-138d-4d2c-975f-c5931cc9b7f2"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Drug interaction alerts:\n",
+            "              name     mrn          diagnosis         drug1  \\\n",
+            "0      Rana Khalil  P-1002      Breast Cancer   Doxorubicin   \n",
+            "1     Huda Mansour  P-1006     Ovarian Cancer   Carboplatin   \n",
+            "2     Fadi Abu Ali  P-1009        Lung Cancer     Cisplatin   \n",
+            "3      Maha Shanti  P-1010  Colorectal Cancer  Capecitabine   \n",
+            "4      Nour Hamdan  P-1012     Ovarian Cancer   Carboplatin   \n",
+            "5  Bassam Kreishan  P-1013           Leukemia  Methotrexate   \n",
+            "6  Sara Abu Rumman  P-1014      Breast Cancer     Tamoxifen   \n",
+            "\n",
+            "                           drug2 interaction_severity  \\\n",
+            "0               Cyclophosphamide             Moderate   \n",
+            "1                     Paclitaxel             Moderate   \n",
+            "2                      Metformin                Major   \n",
+            "3                       Warfarin                Major   \n",
+            "4                     Paclitaxel             Moderate   \n",
+            "5  Trimethoprim-Sulfamethoxazole                Major   \n",
+            "6                       Warfarin                Major   \n",
+            "\n",
+            "                                        description  \n",
+            "0    Combined regimen may increase myelosuppression  \n",
+            "1       Combination may increase marrow suppression  \n",
+            "2  Increased nephrotoxicity / renal impairment risk  \n",
+            "3     Potentiates anticoagulation and bleeding risk  \n",
+            "4       Combination may increase marrow suppression  \n",
+            "5   Myelosuppression and methotrexate toxicity risk  \n",
+            "6           Marked increase in anticoagulant effect  \n"
+          ]
+        }
+      ],
+      "source": [
+        "# Step C: Match patient medications against interaction table\n",
+        "interaction_alerts = []\n",
+        "\n",
+        "for patient in patients:\n",
+        "    meds = set(patient.medications)\n",
+        "    for _, row in interactions.iterrows():\n",
+        "        if row[\"drug1\"] in meds and row[\"drug2\"] in meds:\n",
+        "            interaction_alerts.append({\n",
+        "                \"name\": patient.name,\n",
+        "                \"mrn\": patient.mrn,\n",
+        "                \"diagnosis\": patient.diagnosis,\n",
+        "                \"drug1\": row[\"drug1\"],\n",
+        "                \"drug2\": row[\"drug2\"],\n",
+        "                \"interaction_severity\": row[\"interaction_severity\"],\n",
+        "                \"description\": row[\"description\"]\n",
+        "            })\n",
+        "\n",
+        "drug_alerts_df = pd.DataFrame(interaction_alerts)\n",
+        "\n",
+        "print(\"Drug interaction alerts:\")\n",
+        "print(drug_alerts_df if not drug_alerts_df.empty else \"No interactions found\")"
+      ],
+      "id": "TBdmpKxDZuP3"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "FBg-YFs_ZuP4"
+      },
+      "source": [
+        "#### Step D: Group Analysis"
+      ],
+      "id": "FBg-YFs_ZuP4"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 10,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "X-FkrUgjZuP5",
+        "outputId": "c519378f-3d86-4fd4-bf5b-7b7478fbe1ef"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Summary statistics by diagnosis:\n",
+            "                  hemoglobin                    wbc              platelets  \\\n",
+            "                        mean   min   max       mean  min   max        mean   \n",
+            "diagnosis                                                                    \n",
+            "Breast Cancer      11.800000  10.7  12.9   5.733333  4.8   6.5  215.000000   \n",
+            "Colorectal Cancer   8.450000   7.4   9.5   5.250000  3.1   7.4  112.500000   \n",
+            "Leukemia            9.600000   8.2  11.0  10.600000  2.8  18.4   87.500000   \n",
+            "Lung Cancer        10.466667   9.1  12.2   7.033333  3.2  11.7  176.666667   \n",
+            "Lymphoma           11.866667  10.9  13.1   7.100000  3.4  12.8  161.000000   \n",
+            "Ovarian Cancer      8.250000   7.8   8.7   2.800000  2.7   2.9   90.000000   \n",
+            "Prostate Cancer    12.600000  12.6  12.6   6.000000  6.0   6.0  175.000000   \n",
+            "\n",
+            "                            creatinine            \n",
+            "                   min  max       mean  min  max  \n",
+            "diagnosis                                         \n",
+            "Breast Cancer      115  280   0.800000  0.7  0.9  \n",
+            "Colorectal Cancer   95  130   1.200000  0.9  1.5  \n",
+            "Leukemia            70  105   1.150000  1.1  1.2  \n",
+            "Lung Cancer        140  210   1.233333  1.1  1.4  \n",
+            "Lymphoma            98  220   0.900000  0.8  1.0  \n",
+            "Ovarian Cancer      88   92   1.300000  1.0  1.6  \n",
+            "Prostate Cancer    175  175   1.700000  1.7  1.7  \n"
+          ]
+        }
+      ],
+      "source": [
+        "# Step D: Group by diagnosis and calculate summary statistics\n",
+        "group_stats = df.groupby(\"diagnosis\")[[\"hemoglobin\", \"wbc\", \"platelets\", \"creatinine\"]].agg([\"mean\", \"min\", \"max\"])\n",
+        "\n",
+        "print(\"Summary statistics by diagnosis:\")\n",
+        "print(group_stats)"
+      ],
+      "id": "X-FkrUgjZuP5"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "ivWD8FtuZuP5"
+      },
+      "source": [
+        "## Section 7: Build CSV"
+      ],
+      "id": "ivWD8FtuZuP5"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 11,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "wiluJPCWZuP5",
+        "outputId": "ee7bc931-0f35-4a62-b078-d776644956d1"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Saved: all_patients.csv\n",
+            "Saved: high_risk_patients.csv\n",
+            "Saved: drug_interaction_alerts.csv\n"
+          ]
+        }
+      ],
+      "source": [
+        "# === SECTION 7: BUILD CSV ===\n",
+        "\n",
+        "# CSV 1 - All patients\n",
+        "df.to_csv(ALL_PATIENTS_FILE, index=False)\n",
+        "\n",
+        "# CSV 2 - High-risk patients only\n",
+        "high_risk_df = df[df[\"is_high_risk\"] == True].copy()\n",
+        "high_risk_df.to_csv(HIGH_RISK_FILE, index=False)\n",
+        "\n",
+        "# CSV 3 - Drug interaction alerts\n",
+        "drug_alerts_df.to_csv(DRUG_ALERTS_FILE, index=False)\n",
+        "\n",
+        "print(f\"Saved: {ALL_PATIENTS_FILE}\")\n",
+        "print(f\"Saved: {HIGH_RISK_FILE}\")\n",
+        "print(f\"Saved: {DRUG_ALERTS_FILE}\")"
+      ],
+      "id": "wiluJPCWZuP5"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "5BpnqNvdZuP5"
+      },
+      "source": [
+        "## Section 8: Email"
+      ],
+      "id": "5BpnqNvdZuP5"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 12,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "BtF6kNQyZuP6",
+        "outputId": "1dde63fa-b263-4fd3-aa27-67295dddb11d"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Subject: Daily KHCC Oncology Intake Summary\n",
+            "\n",
+            "Dear Oncology Team,\n",
+            "\n",
+            "Today's intake automation run has completed successfully.\n",
+            "\n",
+            "Summary:\n",
+            "- Total patients processed: 16\n",
+            "- High-risk patients flagged: 8\n",
+            "- Drug interaction alerts identified: 7\n",
+            "\n",
+            "Files generated:\n",
+            "- all_patients.csv\n",
+            "- high_risk_patients.csv\n",
+            "- drug_interaction_alerts.csv\n",
+            "\n",
+            "Please prioritize review of patients flagged as high risk and those with medication interaction alerts.\n",
+            "\n",
+            "Best regards,\n",
+            "Automated Intake Processing Notebook\n"
+          ]
+        }
+      ],
+      "source": [
+        "# === SECTION 8: EMAIL ===\n",
+        "\n",
+        "def generate_email_report(total_patients, high_risk_count, drug_alert_count, files_generated):\n",
+        "    body = f\"\"\"\n",
+        "Subject: Daily KHCC Oncology Intake Summary\n",
+        "\n",
+        "Dear Oncology Team,\n",
+        "\n",
+        "Today's intake automation run has completed successfully.\n",
+        "\n",
+        "Summary:\n",
+        "- Total patients processed: {total_patients}\n",
+        "- High-risk patients flagged: {high_risk_count}\n",
+        "- Drug interaction alerts identified: {drug_alert_count}\n",
+        "\n",
+        "Files generated:\n",
+        "- {files_generated[0]}\n",
+        "- {files_generated[1]}\n",
+        "- {files_generated[2]}\n",
+        "\n",
+        "Please prioritize review of patients flagged as high risk and those with medication interaction alerts.\n",
+        "\n",
+        "Best regards,\n",
+        "Automated Intake Processing Notebook\n",
+        "\"\"\"\n",
+        "    return body.strip()\n",
+        "\n",
+        "email_body = generate_email_report(\n",
+        "    total_patients=len(df),\n",
+        "    high_risk_count=len(high_risk_df),\n",
+        "    drug_alert_count=len(drug_alerts_df),\n",
+        "    files_generated=[ALL_PATIENTS_FILE, HIGH_RISK_FILE, DRUG_ALERTS_FILE]\n",
+        ")\n",
+        "\n",
+        "print(email_body)"
+      ],
+      "id": "BtF6kNQyZuP6"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "frQlvN04ZuP6"
+      },
+      "source": [
+        "## Section 9: Markdown Summary\n",
+        "### Part 2 Summary\n",
+        "- **Patients processed:** 16  \n",
+        "- **High-risk patients:** calculated dynamically in code  \n",
+        "- **Drug interactions found:** calculated dynamically in code  \n",
+        "- **CSV files generated:** `all_patients.csv`, `high_risk_patients.csv`, `drug_interaction_alerts.csv`  \n",
+        "- **Key findings:** Several patients have multiple lab abnormalities, and multiple medication pairs trigger clinically relevant interaction alerts.\n",
+        "\n",
+        "### Part 3 - Analysis & Critical Thinking\n",
+        "My implementation uses fixed thresholds for hemoglobin, white blood cell count, platelets, and creatinine, then labels a patient as high risk if they have a critical hemoglobin value, multiple abnormal labs, or chemotherapy combined with cytopenia or renal dysfunction. One failure mode is that this logic may over-flag patients whose abnormalities are chronic or expected. For example, a patient with long-standing anemia from a non-oncology cause could still trigger a “high-risk” label even if the current visit is clinically stable. A second failure mode is under-classification: I used total WBC rather than absolute neutrophil count, so a patient with a normal total WBC but severe neutropenia would be missed.\n",
+        "\n",
+        "The notebook also omits several checks a real system should include. I do not evaluate potassium, sodium, liver function tests, temperature, performance status, allergies, treatment line, or recent hospitalization. I also do not interpret the free-text clinical note beyond storing it. In real oncology practice, symptoms such as fever, bleeding, dehydration, chest pain, or active infection could be more urgent than the lab pattern alone.\n",
+        "\n",
+        "If deployed at KHCC, PHI and security would be major concerns because names, MRNs, diagnoses, and medications are identifiable clinical data. The notebook should run only in an approved secure environment with role-based access, encrypted storage, audit logging, and no public sharing. If an LLM were added for note summarization, the API key should never be hard-coded in the notebook; it should be stored in a secure secret manager or environment variable.\n",
+        "\n",
+        "To test this notebook, I would create unit tests for `get_lab_alerts()`, `is_high_risk()`, and drug interaction matching using known edge cases. I would also validate the CSV outputs, test missing or malformed values, and run regression tests whenever thresholds or logic change.\n",
+        "\n",
+        "### Part 4 - Stretch Challenge\n",
+        "**Chosen option:** Option A - Email Report Generator  \n",
+        "Implemented as the `generate_email_report()` function in Section 8."
+      ],
+      "id": "frQlvN04ZuP6"
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Python 3",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "name": "python",
+      "version": "3.11"
+    },
+    "colab": {
+      "provenance": [],
+      "include_colab_link": true
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
